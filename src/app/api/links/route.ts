@@ -9,10 +9,11 @@ export async function GET() {
   return NextResponse.json(mockData as MyLinkData);
 }
 
-// POST /api/links - 새 링크 추가 (Firestore users/anonymous/links에 저장)
+// POST /api/links - 새 링크 추가 (Firestore users/{uid}/links에 저장)
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+    const uid = body.uid || "anonymous";
     const linkPayload = {
       title: body.title,
       url: body.url,
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
     };
 
     const docRef = await addDoc(
-      collection(db, "users", "anonymous", "links"),
+      collection(db, "users", uid, "links"),
       linkPayload
     );
 
