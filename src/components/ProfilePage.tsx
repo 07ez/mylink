@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, type CSSProperties } from "react";
 import Link from "next/link";
 import LandingPage from "@/components/LandingPage";
 import type { MyLinkData, LinkItem, UserProfile } from "@/types/link";
@@ -16,6 +16,7 @@ import {
   setDoc,
   deleteDoc,
   getDoc,
+  getDocs,
   updateDoc,
   increment,
 } from "firebase/firestore";
@@ -31,11 +32,11 @@ const STORAGE_KEY = "mylink-data";
 
 // ── 아이콘 렌더러 (사이트 파비콘 및 내장 아이콘 지원) ──────────
 function LinkIcon({ icon, url }: { icon?: string; url?: string }) {
-  const [imgError, setImgError] = useState(false);
+  const [sourceIndex, setSourceIndex] = useState(0);
 
-  // URL 변경 시 이미지 에러 상태 리셋
+  // URL 변경 시 이미지 소스 인덱스 리셋
   useEffect(() => {
-    setImgError(false);
+    setSourceIndex(0);
   }, [url]);
 
   // 고유 내장 아이콘이 명시되어 있고 "link"가 아닌 경우
@@ -108,28 +109,60 @@ function LinkIcon({ icon, url }: { icon?: string; url?: string }) {
     }
   }
 
-  // 사이트 파비콘 URL 추출 (Google Favicon 서비스)
-  let faviconUrl: string | null = null;
-  if (url && !imgError) {
+  // 사이트 파비콘 후보 URL 목록 (개인 배포 사이트 직접 파비콘 + Google Favicon 폴백)
+  const candidates: string[] = [];
+  if (url) {
     try {
       const parsed = new URL(url);
       if (parsed.hostname) {
-        faviconUrl = `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`;
+        const isPersonalOrVercel =
+          parsed.hostname.endsWith(".vercel.app") ||
+          parsed.hostname.endsWith(".netlify.app") ||
+          parsed.hostname.endsWith(".github.io") ||
+          parsed.hostname.endsWith(".pages.dev") ||
+          parsed.hostname === "localhost";
+
+        if (isPersonalOrVercel) {
+          candidates.push(
+            `${parsed.origin}/icon`,
+            `${parsed.origin}/favicon.ico`,
+            `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`
+          );
+        } else {
+          candidates.push(
+            `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`,
+            `${parsed.origin}/favicon.ico`,
+            `${parsed.origin}/icon`
+          );
+        }
       }
     } catch {
-      faviconUrl = null;
+      // ignore invalid url
     }
   }
 
-  // 사이트 아이콘이 있을 경우 렌더링
-  if (faviconUrl) {
+  const currentFaviconUrl = candidates[sourceIndex];
+
+  if (currentFaviconUrl) {
     return (
       <img
-        src={faviconUrl}
+        src={currentFaviconUrl}
         alt=""
         className="h-5 w-5 rounded-sm object-contain"
         referrerPolicy="no-referrer"
-        onError={() => setImgError(true)}
+        onLoad={(e) => {
+          // Google Favicon API가 색인되지 않은 사이트에 대해 기본 16x16 지구본을 반환하면 다음 후보로 전환
+          const img = e.currentTarget;
+          if (
+            currentFaviconUrl.includes("google.com/s2/favicons") &&
+            img.naturalWidth <= 16 &&
+            img.naturalHeight <= 16 &&
+            sourceIndex < candidates.length - 1
+          ) {
+            setSourceIndex((prev) => prev + 1);
+          }
+        }}
+        onError={() => setSourceIndex((prev) => prev + 1)}
       />
     );
   }
@@ -441,7 +474,15 @@ export default function ProfilePage() {
   const [avatarImgError, setAvatarImgError] = useState(false);
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
+  const [isShareCopied, setIsShareCopied] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // 사용자 실시간 검색 모달 상태
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const [data, setData] = useState<MyLinkData | null>(null);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -468,6 +509,12 @@ export default function ProfilePage() {
   const [isUpdating, setIsUpdating] = useState(false);
   const [deletingLink, setDeletingLink] = useState<LinkItem | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+
+  // 링크 순서 이동 FLIP 애니메이션용 ref 및 상태
+  const linkItemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const prevPositionsRef = useRef<Map<string, number>>(new Map());
+  const [movingLinkId, setMovingLinkId] = useState<string | null>(null);
+  const moveHighlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 로그인 유저 기반 기본 프로필 생성 헬퍼
   const buildUserProfile = useCallback((firebaseUser: User, savedUser?: Partial<UserProfile>): UserProfile => {
@@ -525,9 +572,10 @@ export default function ProfilePage() {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         setIsDropdownOpen(false);
+        setIsSearchOpen(false);
       }
     };
-    if (isDropdownOpen) {
+    if (isDropdownOpen || isSearchOpen) {
       document.addEventListener("mousedown", handleClickOutside);
       document.addEventListener("keydown", handleKeyDown);
     }
@@ -535,7 +583,76 @@ export default function ProfilePage() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, [isDropdownOpen]);
+  }, [isDropdownOpen, isSearchOpen]);
+
+  // 헤더 공유 버튼 핸들러 (내 공개 링크 클립보드 복사)
+  const handleHeaderShare = async () => {
+    try {
+      const cleanUsername = data?.user.username?.replace(/^@+/, "");
+      const shareUrl = cleanUsername
+        ? `${window.location.origin}/${encodeURIComponent(cleanUsername)}`
+        : window.location.href;
+      await navigator.clipboard.writeText(shareUrl);
+      setIsShareCopied(true);
+      setTimeout(() => setIsShareCopied(false), 2000);
+    } catch (error) {
+      console.error("링크 복사 실패:", error);
+    }
+  };
+
+  // 헤더 검색 모달 열기 및 전체 유저 목록 로드 (실시간 접두어 자동완성용)
+  const handleOpenSearch = async () => {
+    setIsSearchOpen(true);
+    setSearchQuery("");
+    setTimeout(() => {
+      searchInputRef.current?.focus();
+    }, 50);
+
+    try {
+      setIsSearchingUsers(true);
+      const snap = await getDocs(collection(db, "users"));
+      const fetchedUsers: UserProfile[] = snap.docs
+        .map((docSnap) => {
+          const d = docSnap.data() as Partial<UserProfile>;
+          const name = (d.name || d.username || "").trim();
+          const username = (d.username || d.name || "").replace(/^@+/, "").trim();
+          return {
+            uid: docSnap.id,
+            username,
+            name,
+            title: d.title || "",
+            bio: d.bio || "",
+            avatarText: d.avatarText || (name ? name.charAt(0).toUpperCase() : "U"),
+            photoURL: d.photoURL || "",
+            email: d.email || "",
+            chips: d.chips || [],
+          };
+        })
+        .filter((u) => Boolean(u.name || u.username));
+
+      setAllUsers(fetchedUsers);
+    } catch (error) {
+      console.error("사용자 목록 조회 실패:", error);
+    } finally {
+      setIsSearchingUsers(false);
+    }
+  };
+
+  // 입력한 검색어(접두어 startsWith) 기반 실시간 자동검색 결과
+  const normalizedKeyword = searchQuery.trim().replace(/^@+/, "").toLowerCase();
+  const matchedUsers = normalizedKeyword
+    ? allUsers
+        .filter((u) => {
+          const uname = (u.username || "").replace(/^@+/, "").toLowerCase();
+          const dname = (u.name || "").toLowerCase();
+          return uname.startsWith(normalizedKeyword) || dname.startsWith(normalizedKeyword);
+        })
+        .sort((a, b) => {
+          const aKey = (a.username || a.name).toLowerCase();
+          const bKey = (b.username || b.name).toLowerCase();
+          return aKey.localeCompare(bKey);
+        })
+    : [];
 
   // Firebase Auth 로그인 상태 감지
   useEffect(() => {
@@ -632,8 +749,11 @@ export default function ProfilePage() {
         });
         const uniqueLinks = Array.from(uniqueMap.values());
 
-        // createdAt 기준 최신순(내림차순) 정렬 보장
+        // 사용자 지정 순서(order 오름차순) 기준 정렬 (동일할 경우 최신순)
         uniqueLinks.sort((a, b) => {
+          const orderA = a.order ?? 9999;
+          const orderB = b.order ?? 9999;
+          if (orderA !== orderB) return orderA - orderB;
           const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
           const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
           return timeB - timeA;
@@ -739,16 +859,39 @@ export default function ProfilePage() {
           : editProfile.avatarText,
       };
 
+      const orderedLinks = editLinks.map((l, idx) => ({
+        ...l,
+        title: l.title.trim() || "링크",
+        description: (l.description ?? "").trim(),
+        order: idx + 1,
+      }));
+
       const updated: MyLinkData = {
         user: updatedProfile,
-        links: editLinks.sort((a, b) => a.order - b.order),
+        links: orderedLinks,
       };
 
       setData(updated);
       saveToStorage(updated);
 
       if (authUser) {
-        await setDoc(doc(db, "users", authUser.uid), updatedProfile, { merge: true });
+        await Promise.all([
+          setDoc(doc(db, "users", authUser.uid), updatedProfile, { merge: true }),
+          ...orderedLinks.map((l) =>
+            setDoc(
+              doc(db, "users", authUser.uid, "links", l.id),
+              {
+                title: l.title,
+                url: l.url,
+                description: l.description,
+                isActive: l.isActive,
+                order: l.order,
+                updatedAt: new Date().toISOString(),
+              },
+              { merge: true }
+            )
+          ),
+        ]);
         if (authUser.displayName !== updatedProfile.name) {
           await updateProfile(authUser, { displayName: updatedProfile.name }).catch((err) => {
             console.warn("Firebase Auth displayName 업데이트 실패:", err);
@@ -789,12 +932,69 @@ export default function ProfilePage() {
     setShowAddForm(false);
   };
 
-  // 링크 토글
+  // 링크 공개/비공개 토글
   const toggleLink = (id: string) => {
     setEditLinks((prev) =>
       prev.map((l) => (l.id === id ? { ...l, isActive: !l.isActive } : l))
     );
   };
+
+  // 링크 순서 위/아래 이동 (FLIP 애니메이션 적용)
+  const moveLink = (index: number, direction: "up" | "down") => {
+    const targetIndex = direction === "up" ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= editLinks.length) return;
+
+    // 1. 이동 전 각 카드의 현재 Y 좌표(First) 기록
+    const positions = new Map<string, number>();
+    linkItemRefs.current.forEach((el, id) => {
+      positions.set(id, el.getBoundingClientRect().top);
+    });
+    prevPositionsRef.current = positions;
+
+    const targetId = editLinks[index]?.id ?? null;
+    if (targetId) {
+      setMovingLinkId(targetId);
+      if (moveHighlightTimeoutRef.current) {
+        clearTimeout(moveHighlightTimeoutRef.current);
+      }
+      moveHighlightTimeoutRef.current = setTimeout(() => {
+        setMovingLinkId(null);
+      }, 360);
+    }
+
+    setEditLinks((prev) => {
+      const next = [...prev];
+      if (targetIndex < 0 || targetIndex >= next.length) return prev;
+      const temp = next[index];
+      next[index] = next[targetIndex];
+      next[targetIndex] = temp;
+      return next.map((item, idx) => ({ ...item, order: idx + 1 }));
+    });
+  };
+
+  // 2. DOM 순서 반영 직후 이전 위치와의 차이(Invert)를 계산해 부드럽게 슬라이드(Play)
+  useLayoutEffect(() => {
+    if (prevPositionsRef.current.size === 0) return;
+
+    linkItemRefs.current.forEach((el, id) => {
+      const prevTop = prevPositionsRef.current.get(id);
+      if (prevTop === undefined) return;
+      const newTop = el.getBoundingClientRect().top;
+      const deltaY = prevTop - newTop;
+
+      if (Math.abs(deltaY) > 1) {
+        el.style.transition = "none";
+        el.style.transform = `translateY(${deltaY}px)`;
+        // 강제 리플로우
+        void el.offsetHeight;
+        el.style.transition =
+          "transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 320ms ease, border-color 320ms ease";
+        el.style.transform = "translateY(0)";
+      }
+    });
+
+    prevPositionsRef.current.clear();
+  }, [editLinks]);
 
   // 링크 삭제
   const deleteLink = (id: string) => {
@@ -821,13 +1021,19 @@ export default function ProfilePage() {
     }
 
     // URL 검증
-    if (!newLink.url.trim()) {
+    let normalizedUrl = newLink.url.trim();
+    if (!normalizedUrl) {
       errors.url = "URL을 입력해주세요.";
     } else {
+      if (!/^https?:\/\//i.test(normalizedUrl)) {
+        normalizedUrl = `https://${normalizedUrl.replace(/^https?:\/+/i, "")}`;
+      }
       try {
-        const parsed = new URL(newLink.url.trim());
+        const parsed = new URL(normalizedUrl);
         if (!["http:", "https:"].includes(parsed.protocol)) {
           errors.url = "http:// 또는 https://로 시작하는 URL을 입력해주세요.";
+        } else {
+          normalizedUrl = parsed.href;
         }
       } catch {
         errors.url = "올바른 URL 형식이 아닙니다. (예: https://example.com)";
@@ -841,9 +1047,10 @@ export default function ProfilePage() {
 
     try {
       setIsAdding(true);
+      const targetUid = auth.currentUser?.uid || authUser.uid;
       const linkPayload = {
         title: newLink.title.trim(),
-        url: newLink.url.trim(),
+        url: normalizedUrl,
         description: newLink.description.trim(),
         isActive: true,
         isPrimary: false,
@@ -855,7 +1062,7 @@ export default function ProfilePage() {
 
       // Firestore users/{user.uid}/links 컬렉션에 새 문서 추가
       await addDoc(
-        collection(db, "users", authUser.uid, "links"),
+        collection(db, "users", targetUid, "links"),
         linkPayload
       );
 
@@ -864,7 +1071,14 @@ export default function ProfilePage() {
       setNewLinkErrors({});
       setShowAddForm(false);
     } catch (error) {
-      console.error("Firestore에 링크 추가 중 오류 발생:", error);
+      console.error(
+        "Firestore에 링크 추가 중 오류 발생:",
+        error,
+        "title:",
+        newLink.title,
+        "url:",
+        normalizedUrl
+      );
       setNewLinkErrors({
         title: "Firestore 저장에 실패했습니다. Firebase 권한 또는 연결 상태를 확인해주세요.",
       });
@@ -999,9 +1213,9 @@ export default function ProfilePage() {
   // ── 상단 글로벌 헤더 (구글 소셜 로그인 / 유저 정보 표시) ──
   const renderHeader = () => (
     <header className="sticky top-0 z-40 w-full bg-white/90 backdrop-blur-md border-b border-[#eeeff1]">
-      <div className="mx-auto flex h-14 max-w-[460px] items-center justify-between px-4 sm:px-0">
+      <div className="mx-auto flex h-14 max-w-[460px] sm:max-w-[540px] items-center justify-between px-4 sm:px-0">
         {/* 브랜드 로고 */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#ff6600] text-white font-bold text-sm shadow-sm">
             M
           </div>
@@ -1010,21 +1224,61 @@ export default function ProfilePage() {
           </span>
         </div>
 
-        {/* 우측: 구글 로그인 버튼 또는 로그인한 유저 프로필 드롭다운 */}
-        <div className="flex items-center gap-2">
+        {/* 우측: 구글 로그인 버튼 또는 액션 버튼(검색/공유/내 페이지) + 유저 프로필 드롭다운 */}
+        <div className="flex items-center gap-1.5 sm:gap-2">
           {isAuthLoading ? (
             <div className="h-8 w-24 animate-pulse rounded-full bg-[#f3f4f5]" />
           ) : authUser ? (
             <>
+              {/* 검색 버튼 */}
+              <button
+                type="button"
+                onClick={handleOpenSearch}
+                className="flex h-8 w-8 sm:h-auto sm:w-auto items-center justify-center gap-1.5 rounded-full bg-white border border-[#dcdee3] sm:px-3 sm:py-1.5 text-xs font-semibold text-[#555d6d] hover:border-[#ff6600] hover:text-[#ff6600] transition-colors shadow-xs shrink-0"
+                title="사용자 검색"
+                aria-label="검색"
+              >
+                <span className="hidden sm:inline">검색</span>
+                <svg className="h-3.5 w-3.5 sm:h-3 sm:w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+                </svg>
+              </button>
+
+              {/* 공유 버튼 (링크 복사) */}
+              <button
+                type="button"
+                onClick={handleHeaderShare}
+                className="flex h-8 w-8 sm:h-auto sm:w-auto items-center justify-center gap-1.5 rounded-full bg-white border border-[#dcdee3] sm:px-3 sm:py-1.5 text-xs font-semibold text-[#555d6d] hover:border-[#ff6600] hover:text-[#ff6600] transition-colors shadow-xs shrink-0"
+                title="내 페이지 링크 복사"
+                aria-label="공유"
+              >
+                {isShareCopied ? (
+                  <>
+                    <span className="hidden sm:inline text-[#10ab7d]">복사됨!</span>
+                    <svg className="h-3.5 w-3.5 sm:h-3 sm:w-3 text-[#10ab7d]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </>
+                ) : (
+                  <>
+                    <span className="hidden sm:inline">공유</span>
+                    <svg className="h-3.5 w-3.5 sm:h-3 sm:w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+                    </svg>
+                  </>
+                )}
+              </button>
+
               {/* 내 공개 페이지 바로가기 버튼 */}
               {data?.user.username && (
                 <Link
                   href={`/${data.user.username.replace(/^@+/, "")}`}
-                  className="hidden sm:flex items-center gap-1.5 rounded-full bg-white border border-[#dcdee3] px-3 py-1.5 text-xs font-semibold text-[#555d6d] hover:border-[#ff6600] hover:text-[#ff6600] transition-colors shadow-xs"
+                  className="flex h-8 w-8 sm:h-auto sm:w-auto items-center justify-center gap-1.5 rounded-full bg-white border border-[#dcdee3] sm:px-3 sm:py-1.5 text-xs font-semibold text-[#555d6d] hover:border-[#ff6600] hover:text-[#ff6600] transition-colors shadow-xs shrink-0"
                   title="내 공개 페이지 보기"
+                  aria-label="내 페이지"
                 >
-                  <span>내 페이지</span>
-                  <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <span className="hidden sm:inline">내 페이지</span>
+                  <svg className="h-3.5 w-3.5 sm:h-3 sm:w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
                   </svg>
                 </Link>
@@ -1067,11 +1321,41 @@ export default function ProfilePage() {
                   </svg>
                 </button>
 
-                {/* 프로필 드롭다운 메뉴 */}
+                {/* 프로필 드롭다운 메뉴 (Outline Trace + 위에서 아래로 순차 Wipe-In) */}
                 {isDropdownOpen && (
-                  <div className="absolute right-0 mt-2 w-56 rounded-2xl bg-white p-1.5 shadow-lg border border-[#eeeff1] z-50 animate-in fade-in zoom-in-95 duration-150">
+                  <div className="animate-dropdown-panel absolute right-0 mt-2 w-56 rounded-2xl bg-white p-1.5 shadow-xl border border-[#eeeff1] z-50 overflow-hidden">
+                    {/* 테두리 외곽선 트레이스 SVG (우리 사이트 브랜드 오렌지 톤) */}
+                    <svg
+                      className="pointer-events-none absolute inset-0 h-full w-full z-10"
+                      aria-hidden="true"
+                    >
+                      <defs>
+                        <linearGradient id="mylink-outline-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                          <stop offset="0%" stopColor="#ff6600" />
+                          <stop offset="50%" stopColor="#ff9a44" />
+                          <stop offset="100%" stopColor="#ffd5c0" />
+                        </linearGradient>
+                      </defs>
+                      <rect
+                        x="1"
+                        y="1"
+                        width="calc(100% - 2px)"
+                        height="calc(100% - 2px)"
+                        rx="15"
+                        ry="15"
+                        fill="none"
+                        stroke="url(#mylink-outline-grad)"
+                        strokeWidth="1.75"
+                        pathLength="100"
+                        className="animate-outline-trace"
+                      />
+                    </svg>
+
                     {/* 로그인 계정 정보 요약 */}
-                    <div className="px-3 py-2.5 border-b border-[#eeeff1]">
+                    <div
+                      style={{ "--row-idx": 0 } as CSSProperties}
+                      className="animate-dropdown-row px-3 py-2.5 border-b border-[#eeeff1]"
+                    >
                       <p className="text-xs font-bold text-[#1a1c20] truncate">
                         {data?.user.name || authUser.displayName || "사용자"}
                       </p>
@@ -1089,7 +1373,8 @@ export default function ProfilePage() {
                         <Link
                           href={`/${data.user.username.replace(/^@+/, "")}`}
                           onClick={() => setIsDropdownOpen(false)}
-                          className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
+                          style={{ "--row-idx": 1 } as CSSProperties}
+                          className="animate-dropdown-row flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
                         >
                           <svg
                             className="h-4 w-4 text-[#ff6600] shrink-0"
@@ -1112,7 +1397,8 @@ export default function ProfilePage() {
                       <Link
                         href="/stats"
                         onClick={() => setIsDropdownOpen(false)}
-                        className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
+                        style={{ "--row-idx": 2 } as CSSProperties}
+                        className="animate-dropdown-row flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
                       >
                         <svg
                           className="h-4 w-4 text-[#ff6600] shrink-0"
@@ -1140,7 +1426,8 @@ export default function ProfilePage() {
                         }
                         setIsDropdownOpen(false);
                       }}
-                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
+                      style={{ "--row-idx": 3 } as CSSProperties}
+                      className="animate-dropdown-row flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
                     >
                       <svg
                         className="h-4 w-4 text-[#555d6d] shrink-0"
@@ -1163,14 +1450,19 @@ export default function ProfilePage() {
                       type="button"
                       onClick={async () => {
                         try {
-                          await navigator.clipboard.writeText(window.location.href);
+                          const cleanUsername = data?.user.username?.replace(/^@+/, "");
+                          const shareUrl = cleanUsername
+                            ? `${window.location.origin}/${encodeURIComponent(cleanUsername)}`
+                            : window.location.href;
+                          await navigator.clipboard.writeText(shareUrl);
                           setIsCopied(true);
                           setTimeout(() => setIsCopied(false), 2000);
                         } catch (error) {
                           console.error("링크 복사 실패:", error);
                         }
                       }}
-                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
+                      style={{ "--row-idx": 4 } as CSSProperties}
+                      className="animate-dropdown-row flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#1a1c20] hover:bg-[#f7f8f9] transition-colors"
                     >
                       {isCopied ? (
                         <>
@@ -1216,7 +1508,8 @@ export default function ProfilePage() {
                         resetToDefault();
                         setIsDropdownOpen(false);
                       }}
-                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#555d6d] hover:bg-[#f7f8f9] hover:text-[#1a1c20] transition-colors"
+                      style={{ "--row-idx": 5 } as CSSProperties}
+                      className="animate-dropdown-row flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-[#555d6d] hover:bg-[#f7f8f9] hover:text-[#1a1c20] transition-colors"
                     >
                       <svg
                         className="h-4 w-4 text-[#868b94] shrink-0"
@@ -1236,7 +1529,10 @@ export default function ProfilePage() {
                   </div>
 
                   {/* 메뉴 항목: 로그아웃 */}
-                  <div className="pt-1">
+                  <div
+                    style={{ "--row-idx": 6 } as CSSProperties}
+                    className="animate-dropdown-row pt-1"
+                  >
                     <button
                       type="button"
                       onClick={handleLogout}
@@ -1328,6 +1624,9 @@ export default function ProfilePage() {
   const activeLinks = links
     .filter((l) => l.isActive)
     .sort((a, b) => {
+      const orderA = a.order ?? 9999;
+      const orderB = b.order ?? 9999;
+      if (orderA !== orderB) return orderA - orderB;
       const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
       const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
       return timeB - timeA;
@@ -1414,7 +1713,7 @@ export default function ProfilePage() {
                       setEditProfile((p) => (p ? { ...p, title: e.target.value } : p));
                       if (editErrors.title) setEditErrors((p) => ({ ...p, title: undefined }));
                     }}
-                    placeholder="예: 주니어 웹 개발자"
+                    placeholder="예: 직무 / 타이틀"
                     className="w-full text-xs font-semibold text-center text-[#e14d00] bg-[#fff2ec] rounded-full px-2.5 py-1 border border-[#ff6600] outline-none"
                   />
                   {editErrors.title && (
@@ -1438,7 +1737,7 @@ export default function ProfilePage() {
                       if (editErrors.bio) setEditErrors((p) => ({ ...p, bio: undefined }));
                     }}
                     rows={3}
-                    placeholder="소개글을 입력하세요"
+                    placeholder="예: 소개글입니다."
                     className="w-full text-sm leading-[20px] text-[#555d6d] border border-[#eeeff1] rounded-lg p-2 outline-none focus:border-[#ff6600] resize-none"
                   />
                   {editErrors.bio && (
@@ -1693,71 +1992,121 @@ export default function ProfilePage() {
             {/* ── 편집 모드: 링크 관리 ── */}
             {isEditMode && (
               <div className="space-y-2.5">
-                <p className="text-xs font-semibold text-[#868b94] uppercase tracking-wide mb-3">
-                  링크 관리
-                </p>
+                <div className="flex items-center justify-between mb-3">
+                  <p className="text-xs font-semibold text-[#868b94] uppercase tracking-wide">
+                    링크 관리
+                  </p>
+                  <span className="text-[11px] text-[#868b94]">
+                    화살표로 순서 변경 · 공개 여부 선택
+                  </span>
+                </div>
                 {isLoading ? (
                   <LinkSkeleton />
                 ) : (
-                  [...editLinks]
-                    .sort((a, b) => {
-                      const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-                      const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-                      return timeB - timeA;
-                    })
-                    .map((link) => (
+                  editLinks.map((link, index) => (
                     <div
                       key={link.id}
-                      className={`rounded-xl border p-3.5 transition-colors ${
-                        link.isActive
+                      ref={(el) => {
+                        if (el) {
+                          linkItemRefs.current.set(link.id, el);
+                        } else {
+                          linkItemRefs.current.delete(link.id);
+                        }
+                      }}
+                      className={`rounded-xl border p-3 will-change-transform ${
+                        movingLinkId === link.id
+                          ? "bg-[#fff9f6] border-[#ff6600] shadow-md z-10 relative"
+                          : link.isActive
                           ? "bg-white border-[#eeeff1]"
-                          : "bg-[#f7f8f9] border-[#eeeff1] opacity-60"
+                          : "bg-[#f7f8f9] border-[#eeeff1] opacity-65"
                       }`}
                     >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          {/* 대표 뱃지 */}
-                          {link.isPrimary && (
-                            <span className="flex-shrink-0 rounded-full bg-[#fff2ec] px-1.5 py-0.5 text-[10px] font-bold text-[#e14d00]">
-                              대표
-                            </span>
-                          )}
-                          <span
-                            className="inline-flex items-center gap-1 text-xs text-[#868b94] shrink-0"
-                            title={`조회수: ${link.clickCount ?? 0}`}
+                      <div className="flex items-center gap-2.5">
+                        {/* 좌측: 위/아래 순서 이동 버튼 */}
+                        <div className="flex flex-col items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => moveLink(index, "up")}
+                            disabled={index === 0}
+                            className="flex h-5 w-6 items-center justify-center rounded bg-[#f3f4f5] text-[#555d6d] hover:bg-[#fff2ec] hover:text-[#ff6600] disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                            title="위로 이동"
+                            aria-label="위로 이동"
                           >
-                            <svg className="h-3.5 w-3.5 text-[#868b94]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
                             </svg>
-                            <span>{link.clickCount ?? 0}</span>
-                          </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => moveLink(index, "down")}
+                            disabled={index === editLinks.length - 1}
+                            className="flex h-5 w-6 items-center justify-center rounded bg-[#f3f4f5] text-[#555d6d] hover:bg-[#fff2ec] hover:text-[#ff6600] disabled:opacity-30 disabled:pointer-events-none transition-colors"
+                            title="아래로 이동"
+                            aria-label="아래로 이동"
+                          >
+                            <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                        </div>
+
+                        {/* 중앙: 제목 및 설명 입력 */}
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            {link.isPrimary && (
+                              <span className="shrink-0 rounded-full bg-[#fff2ec] px-1.5 py-0.5 text-[10px] font-bold text-[#e14d00]">
+                                대표
+                              </span>
+                            )}
+                            <input
+                              value={link.title}
+                              onChange={(e) => updateLink(link.id, "title", e.target.value)}
+                              placeholder="링크 제목"
+                              className="text-sm font-semibold text-[#1a1c20] border-b border-[#dcdee3] outline-none w-full min-w-0 bg-transparent focus:border-[#ff6600]"
+                            />
+                          </div>
                           <input
-                            value={link.title}
-                            onChange={(e) => updateLink(link.id, "title", e.target.value)}
-                            className="text-sm font-semibold text-[#1a1c20] border-b border-[#dcdee3] outline-none w-full min-w-0 bg-transparent focus:border-[#ff6600]"
+                            value={link.description ?? ""}
+                            onChange={(e) => updateLink(link.id, "description", e.target.value)}
+                            placeholder="설명 (선택)"
+                            className="mt-1.5 text-xs text-[#868b94] border-b border-transparent outline-none w-full bg-transparent focus:border-[#dcdee3] placeholder-[#c2c5cb]"
                           />
                         </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          {/* 토글 */}
+
+                        {/* 우측: 공개/비공개 토글 및 삭제 */}
+                        <div className="flex items-center gap-2 shrink-0">
                           <button
+                            type="button"
                             onClick={() => toggleLink(link.id)}
-                            title={link.isActive ? "비활성화" : "활성화"}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
-                              link.isActive ? "bg-[#ff6600]" : "bg-[#dcdee3]"
-                            }`}
+                            title={link.isActive ? "클릭하여 비공개로 전환" : "클릭하여 공개로 전환"}
+                            className="flex items-center gap-1.5 rounded-full bg-[#f7f8f9] border border-[#eeeff1] pl-2 pr-1 py-0.5 hover:border-[#dcdee3] transition-colors"
                           >
                             <span
-                              className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                                link.isActive ? "translate-x-4" : "translate-x-0.5"
+                              className={`text-[11px] font-semibold ${
+                                link.isActive ? "text-[#e14d00]" : "text-[#868b94]"
                               }`}
-                            />
+                            >
+                              {link.isActive ? "공개" : "비공개"}
+                            </span>
+                            <span
+                              className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+                                link.isActive ? "bg-[#ff6600]" : "bg-[#dcdee3]"
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${
+                                  link.isActive ? "translate-x-3.5" : "translate-x-0.5"
+                                }`}
+                              />
+                            </span>
                           </button>
-                          {/* 삭제 */}
+
                           <button
+                            type="button"
                             onClick={() => handleOpenDeleteModal(link)}
-                            className="text-[#868b94] hover:text-red-500 transition-colors"
+                            className="p-1 text-[#868b94] hover:text-red-500 transition-colors"
                             title="링크 삭제"
+                            aria-label="링크 삭제"
                           >
                             <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -1765,12 +2114,6 @@ export default function ProfilePage() {
                           </button>
                         </div>
                       </div>
-                      <input
-                        value={link.description ?? ""}
-                        onChange={(e) => updateLink(link.id, "description", e.target.value)}
-                        placeholder="설명 (선택)"
-                        className="mt-1.5 text-xs text-[#868b94] border-b border-transparent outline-none w-full bg-transparent focus:border-[#dcdee3] placeholder-[#c2c5cb]"
-                      />
                     </div>
                   ))
                 )}
@@ -1947,6 +2290,148 @@ export default function ProfilePage() {
         onConfirm={handleConfirmDelete}
         isDeleting={isDeleting}
       />
+
+      {/* ── 인스타 스타일 사용자 실시간 자동완성 검색 모달 ── */}
+      {isSearchOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 p-4 bg-black/40 backdrop-blur-sm"
+          onClick={() => setIsSearchOpen(false)}
+        >
+          <div
+            className="w-full max-w-[420px] rounded-2xl bg-white shadow-2xl border border-[#eeeff1] overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* 상단 검색 입력창 (타자 치는 즉시 자동 검색) */}
+            <div className="flex items-center gap-2.5 px-4 py-3 border-b border-[#eeeff1] bg-[#f7f8f9]/60">
+              <svg
+                className="h-4 w-4 text-[#868b94] shrink-0"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+                />
+              </svg>
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="사용자 이름 또는 @아이디 검색..."
+                className="flex-1 bg-transparent text-sm text-[#1a1c20] placeholder-[#868b94] outline-none"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery("");
+                    searchInputRef.current?.focus();
+                  }}
+                  className="flex h-5 w-5 items-center justify-center rounded-full bg-[#dcdee3] text-white hover:bg-[#868b94] transition-colors"
+                  aria-label="검색어 지우기"
+                >
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsSearchOpen(false)}
+                className="text-xs font-semibold text-[#555d6d] hover:text-[#1a1c20] px-1.5 py-0.5 transition-colors"
+              >
+                닫기
+              </button>
+            </div>
+
+            {/* 실시간 자동검색 결과 리스트 */}
+            <div className="max-h-[340px] overflow-y-auto p-2">
+              {!normalizedKeyword ? (
+                <div className="py-10 text-center">
+                  <p className="text-xs font-medium text-[#868b94]">
+                    찾고 싶은 사용자의 이름이나 아이디를 입력해보세요.
+                  </p>
+                  <p className="mt-1 text-[11px] text-[#b0b5bd]">
+                    글자를 입력하는 즉시 실시간으로 자동 검색됩니다.
+                  </p>
+                </div>
+              ) : isSearchingUsers && allUsers.length === 0 ? (
+                <div className="py-10 flex items-center justify-center gap-2 text-xs text-[#868b94]">
+                  <svg className="h-4 w-4 animate-spin text-[#ff6600]" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                  </svg>
+                  <span>검색 중...</span>
+                </div>
+              ) : matchedUsers.length === 0 ? (
+                <div className="py-10 text-center text-xs text-[#868b94]">
+                  &lsquo;<span className="font-semibold text-[#1a1c20]">{searchQuery.trim()}</span>&rsquo;(으)로 시작하는 사용자가 없습니다.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {matchedUsers.map((target) => {
+                    const targetSlug = (target.username || target.name).replace(/^@+/, "");
+                    return (
+                      <Link
+                        key={target.uid || targetSlug}
+                        href={`/${encodeURIComponent(targetSlug)}`}
+                        onClick={() => setIsSearchOpen(false)}
+                        className="flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 hover:bg-[#f7f8f9] transition-colors group"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          {target.photoURL ? (
+                            <img
+                              src={target.photoURL}
+                              alt={target.name}
+                              className="h-10 w-10 rounded-full object-cover border border-[#eeeff1] shrink-0"
+                              referrerPolicy="no-referrer"
+                            />
+                          ) : (
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#fff2ec] text-sm font-bold text-[#ff6600] border border-[#ffd5c0]">
+                              {target.avatarText || target.name.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+                          <div className="min-w-0 text-left">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm font-bold text-[#1a1c20] truncate group-hover:text-[#ff6600] transition-colors">
+                                {target.name}
+                              </span>
+                              {target.username && (
+                                <span className="text-xs text-[#868b94] truncate">
+                                  @{target.username.replace(/^@+/, "")}
+                                </span>
+                              )}
+                            </div>
+                            {target.title && (
+                              <p className="text-xs text-[#555d6d] truncate mt-0.5">
+                                {target.title}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <svg
+                          className="h-4 w-4 text-[#868b94] shrink-0 group-hover:text-[#ff6600] group-hover:translate-x-0.5 transition-all"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          viewBox="0 0 24 24"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

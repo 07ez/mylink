@@ -1,12 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 
 interface LandingPageProps {
   onLogin: () => void;
   isLoggingIn: boolean;
 }
+
+const NAV_ITEMS = [
+  { id: "interactive-demo", label: "미리보기" },
+  { id: "features", label: "기능 소개" },
+  { id: "how-it-works", label: "이용 방법" },
+  { id: "usecases", label: "활용 사례" },
+] as const;
 
 export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) {
   // 인터랙티브 데모 프리뷰용 클릭 카운트 상태 (방문자가 직접 눌러보며 체험)
@@ -16,6 +23,79 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
     link3: 31,
   });
   const [activeTab, setActiveTab] = useState<"dev" | "creator" | "career">("dev");
+  const [activeNav, setActiveNav] = useState<string>("");
+  const isProgrammaticScroll = useRef(false);
+  const scrollFrameRef = useRef<number | null>(null);
+
+  // 누르자마자 지체 없이 빠르게 "슉" 이동하는 스크롤 애니메이션
+  const animateScrollTo = (targetY: number, duration = 320) => {
+    if (scrollFrameRef.current) {
+      cancelAnimationFrame(scrollFrameRef.current);
+    }
+    const startY = window.scrollY;
+    const distance = targetY - startY;
+    const startTime = performance.now();
+    isProgrammaticScroll.current = true;
+
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const step = (currentTime: number) => {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = easeOutCubic(progress);
+
+      window.scrollTo(0, startY + distance * eased);
+
+      if (progress < 1) {
+        scrollFrameRef.current = requestAnimationFrame(step);
+      } else {
+        isProgrammaticScroll.current = false;
+        scrollFrameRef.current = null;
+      }
+    };
+
+    scrollFrameRef.current = requestAnimationFrame(step);
+  };
+
+  // 상단 네비게이션 클릭 시 부드럽게 이동 & 주황색 활성화
+  const handleNavClick = (id: string, e: React.MouseEvent<HTMLAnchorElement>) => {
+    e.preventDefault();
+    setActiveNav(id);
+    const el = document.getElementById(id);
+    if (!el) return;
+    const headerOffset = 72;
+    const rect = el.getBoundingClientRect();
+    const targetY = Math.max(0, rect.top + window.scrollY - headerOffset);
+    animateScrollTo(targetY);
+  };
+
+  // 스크롤 위치에 따라 현재 섹션 감지해 상단 글자 주황색 전환
+  useEffect(() => {
+    const handleScroll = () => {
+      if (isProgrammaticScroll.current) return;
+      const viewportMiddle = window.scrollY + 200;
+      let current = "";
+      for (const item of NAV_ITEMS) {
+        const el = document.getElementById(item.id);
+        if (!el) continue;
+        const top = el.getBoundingClientRect().top + window.scrollY;
+        const bottom = top + el.offsetHeight;
+        if (viewportMiddle >= top && viewportMiddle <= bottom) {
+          current = item.id;
+          break;
+        }
+      }
+      if (current) {
+        setActiveNav(current);
+      }
+    };
+
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+      if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
+    };
+  }, []);
 
   const handleDemoClick = (id: string, e: React.MouseEvent) => {
     e.preventDefault();
@@ -74,7 +154,15 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
       {/* ── 상단 네비게이션 헤더 ── */}
       <header className="sticky top-0 z-50 w-full bg-white/85 backdrop-blur-md border-b border-[#eeeff1]">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">
-          <Link href="/" className="flex items-center gap-2.5 group">
+          <Link
+            href="/"
+            onClick={(e) => {
+              e.preventDefault();
+              setActiveNav("");
+              animateScrollTo(0, 500);
+            }}
+            className="flex items-center gap-2.5 group"
+          >
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-[#ff6600] text-white font-black text-base shadow-sm group-hover:scale-105 transition-transform">
               M
             </div>
@@ -89,10 +177,28 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
           </Link>
 
           <nav className="hidden md:flex items-center gap-7 text-xs font-semibold text-[#555d6d]">
-            <a href="#features" className="hover:text-[#ff6600] transition-colors">기능 소개</a>
-            <a href="#interactive-demo" className="hover:text-[#ff6600] transition-colors">미리보기</a>
-            <a href="#how-it-works" className="hover:text-[#ff6600] transition-colors">이용 방법</a>
-            <a href="#usecases" className="hover:text-[#ff6600] transition-colors">활용 사례</a>
+            {NAV_ITEMS.map((item) => {
+              const isActive = activeNav === item.id;
+              return (
+                <a
+                  key={item.id}
+                  href={`#${item.id}`}
+                  onClick={(e) => handleNavClick(item.id, e)}
+                  className={`relative py-1 transition-colors duration-200 ${
+                    isActive
+                      ? "text-[#ff6600] font-bold"
+                      : "text-[#555d6d] hover:text-[#ff6600]"
+                  }`}
+                >
+                  {item.label}
+                  <span
+                    className={`absolute left-0 right-0 -bottom-0.5 h-0.5 rounded-full bg-[#ff6600] transition-transform duration-300 origin-center ${
+                      isActive ? "scale-x-100" : "scale-x-0"
+                    }`}
+                  />
+                </a>
+              );
+            })}
           </nav>
 
           <button
@@ -156,28 +262,22 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
                       <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                     </svg>
                   </span>
-                  <span>{isLoggingIn ? "로그인 중..." : "Google로 무료 시작하기"}</span>
+                  <span>{isLoggingIn ? "로그인 중..." : "Google로 시작하기"}</span>
                 </button>
 
-                <a
-                  href="#interactive-demo"
+                <Link
+                  href="/07ez"
                   className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-full bg-white border border-[#dcdee3] px-6 py-4 text-sm font-semibold text-[#555d6d] hover:bg-[#f7f8f9] hover:border-[#ff6600] hover:text-[#ff6600] transition-colors shadow-xs"
                 >
-                  <span>라이브 데모 체험하기</span>
+                  <span>개발자 링크 확인해보기</span>
                   <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 13.5L12 21m0 0l-7.5-7.5M12 21V3" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                   </svg>
-                </a>
+                </Link>
               </div>
 
               {/* 신뢰 지표 태그 */}
               <div className="pt-4 flex flex-wrap items-center justify-center lg:justify-start gap-5 text-xs text-[#868b94]">
-                <div className="flex items-center gap-1.5">
-                  <svg className="h-4 w-4 text-[#10ab7d]" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
-                  </svg>
-                  <span>완전 무료 서비스</span>
-                </div>
                 <div className="flex items-center gap-1.5">
                   <svg className="h-4 w-4 text-[#10ab7d]" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
@@ -189,6 +289,12 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
                   </svg>
                   <span>파비콘 자동 연동</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <svg className="h-4 w-4 text-[#10ab7d]" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                  </svg>
+                  <span>모바일 반응형 최적화</span>
                 </div>
               </div>
             </div>
@@ -628,7 +734,7 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
         <div className="mx-auto max-w-4xl px-4 sm:px-6 text-center space-y-6">
           <div className="inline-flex items-center gap-2 rounded-full bg-[#fff2ec] border border-[#ffd5c0] px-4 py-1.5 text-xs font-semibold text-[#e14d00] shadow-xs">
             <span className="flex h-2 w-2 rounded-full bg-[#ff6600] animate-pulse" />
-            <span>지금 바로 무료로 시작하기</span>
+            <span>지금 바로 시작하기</span>
           </div>
 
           <h2 className="text-3xl sm:text-5xl font-black text-[#1a1c20] tracking-tight leading-[1.2] break-keep">
@@ -658,7 +764,7 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
                   <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                 </svg>
               </span>
-              <span>{isLoggingIn ? "로그인 중..." : "Google로 지금 무료 시작하기"}</span>
+              <span>{isLoggingIn ? "로그인 중..." : "Google로 시작하기"}</span>
             </button>
           </div>
         </div>

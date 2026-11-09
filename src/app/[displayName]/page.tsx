@@ -20,10 +20,10 @@ import { onAuthStateChanged, type User } from "firebase/auth";
 
 // ── 아이콘 렌더러 (사이트 파비콘 및 내장 아이콘 지원) ──────────
 function LinkIcon({ icon, url }: { icon?: string; url?: string }) {
-  const [imgError, setImgError] = useState(false);
+  const [sourceIndex, setSourceIndex] = useState(0);
 
   useEffect(() => {
-    setImgError(false);
+    setSourceIndex(0);
   }, [url]);
 
   if (icon && icon !== "link") {
@@ -73,26 +73,58 @@ function LinkIcon({ icon, url }: { icon?: string; url?: string }) {
     }
   }
 
-  let faviconUrl: string | null = null;
-  if (url && !imgError) {
+  const candidates: string[] = [];
+  if (url) {
     try {
       const parsed = new URL(url);
       if (parsed.hostname) {
-        faviconUrl = `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`;
+        const isPersonalOrVercel =
+          parsed.hostname.endsWith(".vercel.app") ||
+          parsed.hostname.endsWith(".netlify.app") ||
+          parsed.hostname.endsWith(".github.io") ||
+          parsed.hostname.endsWith(".pages.dev") ||
+          parsed.hostname === "localhost";
+
+        if (isPersonalOrVercel) {
+          candidates.push(
+            `${parsed.origin}/icon`,
+            `${parsed.origin}/favicon.ico`,
+            `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`
+          );
+        } else {
+          candidates.push(
+            `https://www.google.com/s2/favicons?domain=${parsed.hostname}&sz=64`,
+            `${parsed.origin}/favicon.ico`,
+            `${parsed.origin}/icon`
+          );
+        }
       }
     } catch {
-      faviconUrl = null;
+      // ignore invalid url
     }
   }
 
-  if (faviconUrl) {
+  const currentFaviconUrl = candidates[sourceIndex];
+
+  if (currentFaviconUrl) {
     return (
       <img
-        src={faviconUrl}
+        src={currentFaviconUrl}
         alt=""
         className="h-5 w-5 rounded-sm object-contain"
         referrerPolicy="no-referrer"
-        onError={() => setImgError(true)}
+        onLoad={(e) => {
+          const img = e.currentTarget;
+          if (
+            currentFaviconUrl.includes("google.com/s2/favicons") &&
+            img.naturalWidth <= 16 &&
+            img.naturalHeight <= 16 &&
+            sourceIndex < candidates.length - 1
+          ) {
+            setSourceIndex((prev) => prev + 1);
+          }
+        }}
+        onError={() => setSourceIndex((prev) => prev + 1)}
       />
     );
   }
@@ -243,8 +275,17 @@ export default function PublicProfilePage({
               };
             });
 
-            // 활성화된 링크만 노출 (방문자 뷰)
-            const activeLinks = fetched.filter((l) => l.isActive);
+            // 공개(isActive: true) 설정된 링크만 노출 및 사용자 지정 순서(order 오름차순) 정렬
+            const activeLinks = fetched
+              .filter((l) => l.isActive)
+              .sort((a, b) => {
+                const orderA = a.order ?? 9999;
+                const orderB = b.order ?? 9999;
+                if (orderA !== orderB) return orderA - orderB;
+                const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+                const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+                return timeB - timeA;
+              });
 
             if (isMounted) {
               setLinks(activeLinks);
@@ -434,7 +475,7 @@ export default function PublicProfilePage({
               )}
             </button>
 
-            {/* 본인 여부에 따른 동작 버튼 */}
+            {/* 본인 여부 및 로그인 여부에 따른 동작 버튼 */}
             {isOwner ? (
               <Link
                 href="/"
@@ -450,7 +491,7 @@ export default function PublicProfilePage({
                 href="/"
                 className="rounded-full bg-[#1a1c20] px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-black transition-colors"
               >
-                나도 만들기
+                {authUser ? "내 링크로 돌아가기" : "나도 만들기"}
               </Link>
             )}
           </div>
