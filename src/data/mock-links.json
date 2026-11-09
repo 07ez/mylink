@@ -16,7 +16,8 @@
       "isActive": true,
       "isPrimary": true,
       "icon": "github",
-      "order": 1
+      "order": 1,
+      "clickCount": 12
     },
     {
       "id": "link-2",
@@ -26,7 +27,8 @@
       "isActive": true,
       "isPrimary": false,
       "icon": "folder",
-      "order": 2
+      "order": 2,
+      "clickCount": 8
     },
     {
       "id": "link-3",
@@ -36,7 +38,8 @@
       "isActive": true,
       "isPrimary": false,
       "icon": "code",
-      "order": 3
+      "order": 3,
+      "clickCount": 5
     },
     {
       "id": "link-4",
@@ -46,7 +49,8 @@
       "isActive": true,
       "isPrimary": false,
       "icon": "book-open",
-      "order": 4
+      "order": 4,
+      "clickCount": 0
     },
     {
       "id": "link-5",
@@ -56,7 +60,8 @@
       "isActive": false,
       "isPrimary": false,
       "icon": "linkedin",
-      "order": 5
+      "order": 5,
+      "clickCount": 0
     }
   ]
 }

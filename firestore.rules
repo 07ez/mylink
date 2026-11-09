@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ==========================================
+    // 헬퍼 함수 정의
+    // ==========================================
+
+    // 로그인 여부 확인
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // 로그인한 유저와 대상 문서의 소유자(userId) 일치 여부 확인
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // URL 형식 검증 (http:// 또는 https://)
+    function isValidUrl(url) {
+      return url is string && (url.matches('^https?://.*') || url == '');
+    }
+
+    // ==========================================
+    // 1. 유저 프로필 문서 (users/{userId})
+    //    현재 프로젝트 구조: doc(db, "users", authUser.uid)
+    // ==========================================
+    match /users/{userId} {
+      // 읽기: 누구나 가능 (프로필 공개 페이지 조회)
+      allow read: if true;
+
+      // 쓰기 (생성/수정/삭제): 본인만 가능
+      // 심화 유효성 검증:
+      // - name: 문자열 및 50자 이하
+      // - bio: 문자열 및 500자 이하
+      // - username: 소문자/숫자/언더스코어 등 유효한 형태
+      // - chips: 리스트(배열) 형태 및 최대 10개
+      allow create: if isOwner(userId) 
+        && request.resource.data.name is string 
+        && request.resource.data.name.size() <= 50;
+
+      allow update: if isOwner(userId)
+        && request.resource.data.name is string 
+        && request.resource.data.name.size() <= 50
+        && (!('bio' in request.resource.data) || (request.resource.data.bio is string && request.resource.data.bio.size() <= 500))
+        && (!('chips' in request.resource.data) || (request.resource.data.chips is list && request.resource.data.chips.size() <= 10))
+        && (!('photoURL' in request.resource.data) || isValidUrl(request.resource.data.photoURL));
+
+      allow delete: if isOwner(userId);
+
+      // ==========================================
+      // 1-1. 프로필 서브컬렉션 (users/{userId}/profile/{profileId})
+      //      요청하신 users/{userId}/profile 형태를 서브컬렉션으로 둘 경우
+      // ==========================================
+      match /profile/{profileId} {
+        allow read: if true;
+        allow write: if isOwner(userId);
+      }
+
+      // ==========================================
+      // 2. 링크 서브컬렉션 (users/{userId}/links/{linkId})
+      // ==========================================
+      match /links/{linkId} {
+        // 읽기: 누구나 가능 (Public Read)
+        allow read: if true;
+
+        // 쓰기: 본인 ID 일치 시에만 가능
+        allow create: if isOwner(userId)
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 100
+          && isValidUrl(request.resource.data.url);
+
+        allow update: if (isOwner(userId)
+          && request.resource.data.title is string
+          && request.resource.data.title.size() > 0
+          && request.resource.data.title.size() <= 100
+          && isValidUrl(request.resource.data.url))
+          || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['clickCount']);
+
+        allow delete: if isOwner(userId);
+      }
+    }
+  }
+}

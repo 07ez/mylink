@@ -11,12 +11,12 @@ import {
   onSnapshot,
   query,
   orderBy,
-  where,
   doc,
   setDoc,
   deleteDoc,
   getDoc,
-  getDocs,
+  updateDoc,
+  increment,
 } from "firebase/firestore";
 import {
   signInWithPopup,
@@ -452,16 +452,10 @@ export default function ProfilePage() {
   const [isAdding, setIsAdding] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // 편집 모드: Display Name 중복 확인 및 태그(chips) 입력 상태
-  const [usernameCheckStatus, setUsernameCheckStatus] = useState<
-    "idle" | "checking" | "available" | "duplicate" | "same" | "invalid"
-  >("idle");
-  const [usernameCheckMessage, setUsernameCheckMessage] = useState("");
-  const [checkedUsername, setCheckedUsername] = useState("");
+  // 편집 모드: 태그(chips) 입력 상태
   const [chipInput, setChipInput] = useState("");
   const [editErrors, setEditErrors] = useState<{
     name?: string;
-    username?: string;
     title?: string;
     bio?: string;
     chips?: string;
@@ -623,6 +617,7 @@ export default function ProfilePage() {
             isPrimary: docData.isPrimary ?? false,
             icon: docData.icon || "link",
             order: docData.order ?? 0,
+            clickCount: docData.clickCount ?? 0,
             createdAt: docData.createdAt,
           };
         });
@@ -672,71 +667,14 @@ export default function ProfilePage() {
   // 편집 모드 진입
   const enterEditMode = () => {
     if (!data) return;
-    const cleanUsername = (data.user.username || "").replace(/^@+/, "");
     setEditProfile({
       ...data.user,
-      username: cleanUsername,
       chips: [...data.user.chips],
     });
     setEditLinks(data.links.map((l) => ({ ...l })));
-    setUsernameCheckStatus("idle");
-    setUsernameCheckMessage("");
-    setCheckedUsername(cleanUsername.trim());
     setChipInput("");
     setEditErrors({});
     setIsEditMode(true);
-  };
-
-  // Display Name (@username) 중복 확인 핸들러 (Firestore users 컬렉션 조회)
-  const handleCheckUsernameDuplicate = async () => {
-    if (!editProfile) return;
-    const trimmed = (editProfile.username || "").replace(/^@+/, "").trim();
-    setEditErrors((p) => ({ ...p, username: undefined }));
-
-    if (!trimmed) {
-      setUsernameCheckStatus("invalid");
-      setUsernameCheckMessage("Display Name을 입력해주세요.");
-      return;
-    }
-
-    if (trimmed.length < 2 || trimmed.length > 20) {
-      setUsernameCheckStatus("invalid");
-      setUsernameCheckMessage("Display Name은 2~20자 이내로 입력해주세요.");
-      return;
-    }
-
-    if (/\s/.test(trimmed)) {
-      setUsernameCheckStatus("invalid");
-      setUsernameCheckMessage("Display Name에는 공백을 포함할 수 없습니다.");
-      return;
-    }
-
-    try {
-      setUsernameCheckStatus("checking");
-      setUsernameCheckMessage("중복 여부를 확인하는 중입니다...");
-
-      const q = query(collection(db, "users"), where("username", "==", trimmed));
-      const snapshot = await getDocs(q);
-      const isDuplicate = snapshot.docs.some((docSnap) => docSnap.id !== authUser?.uid);
-
-      const currentCleanUsername = (data?.user.username || "").replace(/^@+/, "").trim();
-      if (isDuplicate) {
-        setUsernameCheckStatus("duplicate");
-        setUsernameCheckMessage(`@${trimmed} 은(는) 이미 사용 중인 Display Name입니다.`);
-      } else if (trimmed === currentCleanUsername) {
-        setUsernameCheckStatus("same");
-        setUsernameCheckMessage(`@${trimmed} 은(는) 현재 사용 중인 본인의 Display Name입니다.`);
-        setCheckedUsername(trimmed);
-      } else {
-        setUsernameCheckStatus("available");
-        setUsernameCheckMessage(`@${trimmed} 은(는) 사용 가능한 Display Name입니다.`);
-        setCheckedUsername(trimmed);
-      }
-    } catch (error) {
-      console.error("Display Name 중복 확인 실패:", error);
-      setUsernameCheckStatus("invalid");
-      setUsernameCheckMessage("중복 확인 중 오류가 발생했습니다. 다시 시도해주세요.");
-    }
   };
 
   // 기술 스택 칩 추가
@@ -775,29 +713,11 @@ export default function ProfilePage() {
     const errors: typeof editErrors = {};
 
     const trimmedName = editProfile.name.trim();
-    const trimmedUsername = (editProfile.username || "").replace(/^@+/, "").trim();
-    const currentCleanUsername = (data.user.username || "").replace(/^@+/, "").trim();
-    const isUsernameChanged = trimmedUsername !== currentCleanUsername;
 
     if (!trimmedName) {
       errors.name = "이름을 입력해주세요.";
     } else if (trimmedName.length > 20) {
       errors.name = "이름은 20자 이내로 입력해주세요.";
-    }
-
-    if (!trimmedUsername) {
-      errors.username = "Display Name을 입력해주세요.";
-    } else if (trimmedUsername.length < 2 || trimmedUsername.length > 20) {
-      errors.username = "Display Name은 2~20자 이내로 입력해주세요.";
-    } else if (/\s/.test(trimmedUsername)) {
-      errors.username = "Display Name에는 공백을 포함할 수 없습니다.";
-    } else if (usernameCheckStatus === "duplicate") {
-      errors.username = "이미 사용 중인 Display Name입니다. 다른 이름을 입력해주세요.";
-    } else if (
-      isUsernameChanged &&
-      (usernameCheckStatus !== "available" || checkedUsername !== trimmedUsername)
-    ) {
-      errors.username = "Display Name 변경 시 중복 확인을 완료해주세요.";
     }
 
     if (Object.keys(errors).length > 0) {
@@ -810,7 +730,7 @@ export default function ProfilePage() {
       const updatedProfile: UserProfile = {
         ...editProfile,
         name: trimmedName,
-        username: trimmedUsername,
+        username: data.user.username,
         title: editProfile.title.trim(),
         bio: editProfile.bio.trim(),
         avatarText: trimmedName
@@ -928,6 +848,7 @@ export default function ProfilePage() {
         isPrimary: false,
         icon: "link",
         order: editLinks.length + 1,
+        clickCount: 0,
         createdAt: new Date().toISOString(),
       };
 
@@ -1042,6 +963,35 @@ export default function ProfilePage() {
       alert("삭제 중 오류가 발생했습니다. 다시 시도해주세요.");
     } finally {
       setIsDeleting(false);
+    }
+  };
+
+  // 링크 클릭 핸들러 (클릭 카운트 저장)
+  const handleLinkClick = async (link: LinkItem) => {
+    if (!authUser) return;
+    try {
+      setData((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          links: prev.links.map((l) =>
+            l.id === link.id ? { ...l, clickCount: (l.clickCount ?? 0) + 1 } : l
+          ),
+        };
+      });
+
+      setEditLinks((prev) =>
+        prev.map((l) =>
+          l.id === link.id ? { ...l, clickCount: (l.clickCount ?? 0) + 1 } : l
+        )
+      );
+
+      const linkRef = doc(db, "users", authUser.uid, "links", link.id);
+      await updateDoc(linkRef, {
+        clickCount: increment(1),
+      });
+    } catch (error) {
+      console.error("클릭 카운트 저장 실패:", error);
     }
   };
 
@@ -1505,82 +1455,17 @@ export default function ProfilePage() {
               )}
 
               {/* Display Name (@username) */}
-              {isEditMode ? (
-                <div className="mt-2 w-full max-w-[280px]">
-                  <label className="text-[11px] font-semibold text-[#868b94] block mb-0.5 text-center">
-                    Display Name (닉네임)
-                  </label>
-                  <div className="flex items-center gap-1.5 justify-center">
-                    <div
-                      className={`flex items-center rounded-xl border px-2.5 py-1.5 transition-colors flex-1 bg-white ${
-                        editErrors.username ||
-                        usernameCheckStatus === "duplicate" ||
-                        usernameCheckStatus === "invalid"
-                          ? "border-red-400 bg-red-50/30"
-                          : usernameCheckStatus === "available" || usernameCheckStatus === "same"
-                          ? "border-[#10ab7d] bg-[#10ab7d]/5"
-                          : "border-[#dcdee3] focus-within:border-[#ff6600]"
-                      }`}
-                    >
-                      <span className="text-xs font-bold text-[#868b94] select-none mr-0.5">@</span>
-                      <input
-                        type="text"
-                        value={editProfile?.username ?? ""}
-                        onChange={(e) => {
-                          const val = e.target.value.replace(/^@+/, "");
-                          setEditProfile((p) => (p ? { ...p, username: val } : p));
-                          setUsernameCheckStatus("idle");
-                          setUsernameCheckMessage("");
-                          if (editErrors.username)
-                            setEditErrors((p) => ({ ...p, username: undefined }));
-                        }}
-                        placeholder="07ez"
-                        className="w-full bg-transparent text-xs font-semibold text-[#1a1c20] outline-none"
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleCheckUsernameDuplicate}
-                      disabled={usernameCheckStatus === "checking"}
-                      className="shrink-0 rounded-xl bg-[#fff2ec] border border-[#ffd5c0] px-2.5 py-1.5 text-[11px] font-semibold text-[#e14d00] hover:bg-[#ffe4d6] transition-colors disabled:opacity-50"
-                    >
-                      {usernameCheckStatus === "checking" ? "확인 중..." : "중복 확인"}
-                    </button>
-                  </div>
-
-                  {/* 중복 확인 안내 / 에러 메시지 */}
-                  {usernameCheckMessage && (
-                    <p
-                      className={`mt-1 text-[11px] text-center font-medium ${
-                        usernameCheckStatus === "available" || usernameCheckStatus === "same"
-                          ? "text-[#10ab7d]"
-                          : usernameCheckStatus === "checking"
-                          ? "text-[#868b94]"
-                          : "text-red-500"
-                      }`}
-                    >
-                      {usernameCheckMessage}
-                    </p>
-                  )}
-                  {editErrors.username && (
-                    <p className="mt-1 text-[11px] text-center text-red-500">
-                      {editErrors.username}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                user.username && (
-                  <Link
-                    href={`/${user.username.replace(/^@+/, "")}`}
-                    className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-[#868b94] hover:text-[#ff6600] transition-colors"
-                    title="내 공개 페이지 바로가기"
-                  >
-                    <span>@{user.username.replace(/^@+/, "")}</span>
-                    <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                    </svg>
-                  </Link>
-                )
+              {user.username && (
+                <Link
+                  href={`/${user.username.replace(/^@+/, "")}`}
+                  className="mt-0.5 inline-flex items-center gap-1 text-xs font-medium text-[#868b94] hover:text-[#ff6600] transition-colors"
+                  title="내 공개 페이지 바로가기"
+                >
+                  <span>@{user.username.replace(/^@+/, "")}</span>
+                  <svg className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                </Link>
               )}
 
               {/* 직무 뱃지 */}
@@ -1733,10 +1618,22 @@ export default function ProfilePage() {
                           href={primaryLink.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex flex-1 items-center justify-center gap-2 rounded-full bg-[#ff6600] px-5 py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#e14d00] active:scale-[0.98] min-w-0"
+                          onClick={() => handleLinkClick(primaryLink)}
+                          className="flex flex-1 items-center justify-between rounded-full bg-[#ff6600] px-5 py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#e14d00] active:scale-[0.98] min-w-0"
                         >
-                          <LinkIcon icon={primaryLink.icon} url={primaryLink.url} />
-                          <span className="truncate">{primaryLink.title}</span>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <LinkIcon icon={primaryLink.icon} url={primaryLink.url} />
+                            <span className="truncate">{primaryLink.title}</span>
+                          </div>
+                          <span
+                            className="shrink-0 flex items-center gap-1 text-xs font-semibold text-white/95 bg-black/15 px-2.5 py-0.5 rounded-full"
+                            title={`조회수: ${primaryLink.clickCount ?? 0}`}
+                          >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" />
+                            </svg>
+                            <span>{primaryLink.clickCount ?? 0}</span>
+                          </span>
                         </a>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <button
@@ -1787,14 +1684,26 @@ export default function ProfilePage() {
                             href={link.url}
                             target="_blank"
                             rel="noopener noreferrer"
+                            onClick={() => handleLinkClick(link)}
                             className="group flex items-center gap-3 flex-1 min-w-0 mr-2"
                           >
                             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#555d6d] shadow-sm transition-colors group-hover:text-[#ff6600]">
                               <LinkIcon icon={link.icon} url={link.url} />
                             </div>
-                            <div className="text-left min-w-0">
-                              <div className="text-sm font-semibold text-[#1a1c20] truncate group-hover:text-[#ff6600] transition-colors">
-                                {link.title}
+                            <div className="text-left min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-semibold text-[#1a1c20] truncate group-hover:text-[#ff6600] transition-colors">
+                                  {link.title}
+                                </span>
+                                <span
+                                  className="inline-flex items-center gap-1 text-xs text-[#868b94] shrink-0"
+                                  title={`조회수: ${link.clickCount ?? 0}`}
+                                >
+                                  <svg className="h-3.5 w-3.5 text-[#868b94]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" />
+                                  </svg>
+                                  <span>{link.clickCount ?? 0}</span>
+                                </span>
                               </div>
                               {link.description && (
                                 <div className="text-xs text-[#868b94] truncate">
@@ -1875,6 +1784,15 @@ export default function ProfilePage() {
                               대표
                             </span>
                           )}
+                          <span
+                            className="inline-flex items-center gap-1 text-xs text-[#868b94] shrink-0"
+                            title={`조회수: ${link.clickCount ?? 0}`}
+                          >
+                            <svg className="h-3.5 w-3.5 text-[#868b94]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" />
+                            </svg>
+                            <span>{link.clickCount ?? 0}</span>
+                          </span>
                           <input
                             value={link.title}
                             onChange={(e) => updateLink(link.id, "title", e.target.value)}

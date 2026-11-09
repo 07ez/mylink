@@ -22,6 +22,7 @@ export async function POST(request: Request) {
       isPrimary: body.isPrimary ?? false,
       icon: body.icon ?? "link",
       order: body.order ?? 99,
+      clickCount: body.clickCount ?? 0,
       createdAt: new Date().toISOString(),
     };
 

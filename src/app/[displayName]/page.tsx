@@ -12,6 +12,9 @@ import {
   getDocs,
   orderBy,
   onSnapshot,
+  doc,
+  updateDoc,
+  increment,
 } from "firebase/firestore";
 import { onAuthStateChanged, type User } from "firebase/auth";
 
@@ -235,6 +238,7 @@ export default function PublicProfilePage({
                 isPrimary: d.isPrimary ?? false,
                 icon: d.icon || "link",
                 order: d.order ?? 0,
+                clickCount: d.clickCount ?? 0,
                 createdAt: d.createdAt,
               };
             });
@@ -364,6 +368,25 @@ export default function PublicProfilePage({
   const isOwner = authUser && (authUser.uid === targetUser.uid);
   const primaryLink = links.find((l) => l.isPrimary);
   const subLinks = links.filter((l) => !l.isPrimary);
+
+  // 링크 클릭 핸들러 (클릭 카운트 저장)
+  const handleLinkClick = async (link: LinkItem) => {
+    if (!targetUser?.uid) return;
+    try {
+      setLinks((prev) =>
+        prev.map((l) =>
+          l.id === link.id ? { ...l, clickCount: (l.clickCount ?? 0) + 1 } : l
+        )
+      );
+
+      const linkRef = doc(db, "users", targetUser.uid, "links", link.id);
+      await updateDoc(linkRef, {
+        clickCount: increment(1),
+      });
+    } catch (error) {
+      console.error("클릭 카운트 저장 실패:", error);
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f7f8f9]">
@@ -510,10 +533,22 @@ export default function PublicProfilePage({
                   href={primaryLink.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex w-full items-center justify-center gap-2 rounded-full bg-[#ff6600] px-5 py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#e14d00] active:scale-[0.98]"
+                  onClick={() => handleLinkClick(primaryLink)}
+                  className="flex w-full items-center justify-between rounded-full bg-[#ff6600] px-5 py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#e14d00] active:scale-[0.98]"
                 >
-                  <LinkIcon icon={primaryLink.icon} url={primaryLink.url} />
-                  <span className="truncate">{primaryLink.title}</span>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <LinkIcon icon={primaryLink.icon} url={primaryLink.url} />
+                    <span className="truncate">{primaryLink.title}</span>
+                  </div>
+                  <span
+                    className="shrink-0 flex items-center gap-1 text-xs font-semibold text-white/95 bg-black/15 px-2.5 py-0.5 rounded-full"
+                    title={`조회수: ${primaryLink.clickCount ?? 0}`}
+                  >
+                    <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" />
+                    </svg>
+                    <span>{primaryLink.clickCount ?? 0}</span>
+                  </span>
                 </a>
               </div>
             )}
@@ -526,15 +561,27 @@ export default function PublicProfilePage({
                   href={link.url}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={() => handleLinkClick(link)}
                   className="group flex items-center justify-between rounded-xl bg-[#f7f8f9] p-3.5 transition-all hover:bg-[#f0f2f4] border border-transparent hover:border-[#eeeff1]"
                 >
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="flex items-center gap-3 flex-1 min-w-0 mr-2">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-[#555d6d] shadow-sm transition-colors group-hover:text-[#ff6600]">
                       <LinkIcon icon={link.icon} url={link.url} />
                     </div>
                     <div className="text-left min-w-0">
-                      <div className="text-sm font-semibold text-[#1a1c20] truncate group-hover:text-[#ff6600] transition-colors">
-                        {link.title}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-[#1a1c20] truncate group-hover:text-[#ff6600] transition-colors">
+                          {link.title}
+                        </span>
+                        <span
+                          className="inline-flex items-center gap-1 text-xs text-[#868b94] shrink-0"
+                          title={`조회수: ${link.clickCount ?? 0}`}
+                        >
+                          <svg className="h-3.5 w-3.5 text-[#868b94]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5" />
+                          </svg>
+                          <span>{link.clickCount ?? 0}</span>
+                        </span>
                       </div>
                       {link.description && (
                         <div className="text-xs text-[#868b94] truncate">
