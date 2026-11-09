@@ -121,6 +121,14 @@
   * {
     @apply border-border outline-ring/50;
   }
+  *:not(input, textarea, [contenteditable="true"]) {
+    caret-color: transparent;
+  }
+  input,
+  textarea,
+  [contenteditable="true"] {
+    caret-color: auto;
+  }
   body {
     @apply bg-background text-foreground;
   }

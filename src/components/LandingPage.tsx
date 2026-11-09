@@ -596,7 +596,7 @@ export default function LandingPage({ onLogin, isLoggingIn }: LandingPageProps) 
                       <p className={`text-xs font-bold truncate ${idx === 0 ? "text-white" : "text-[#1a1c20]"}`}>
                         {link.title}
                       </p>
-                      <p className={`text-[10px] truncate ${idx === 0 ? "text-white/80" : "text-[#868b94]"}`}>
+                      <p className={`text-[10px] break-words break-keep ${idx === 0 ? "text-white/80" : "text-[#868b94]"}`}>
                         {link.desc}
                       </p>
                     </div>

@@ -586,7 +586,7 @@ export default function PublicProfilePage({
                         </span>
                       </div>
                       {link.description && (
-                        <div className="text-xs text-[#868b94] truncate">
+                        <div className="text-xs text-[#868b94] break-words break-keep leading-relaxed mt-0.5">
                           {link.description}
                         </div>
                       )}
