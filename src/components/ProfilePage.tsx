@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
+import LandingPage from "@/components/LandingPage";
 import type { MyLinkData, LinkItem, UserProfile } from "@/types/link";
 import mockData from "@/data/mock-links.json";
 import { db, auth, googleProvider } from "@/lib/firebase";
@@ -1306,96 +1307,9 @@ export default function ProfilePage() {
     );
   }
 
-  // 2. 비로그인 상태 화면: MyLink 서비스 소개 및 시작 안내
+  // 2. 비로그인 상태 화면: 모던 반응형 랜딩 페이지
   if (!authUser) {
-    return (
-      <div className="min-h-screen flex flex-col bg-[#f7f8f9]">
-        {renderHeader()}
-        <main className="flex-1 w-full flex items-center justify-center p-4 sm:p-6">
-          <div className="w-full max-w-[460px]">
-            <div className="rounded-[20px] bg-white p-6 sm:p-8 shadow-[0_1px_4px_0_rgba(0,0,0,0.06)] border border-[#eeeff1] text-center">
-              {/* 서비스 아이콘 */}
-              <div className="mx-auto mb-3.5 flex h-14 w-14 items-center justify-center rounded-2xl bg-[#fff2ec] text-[#ff6600] border border-[#ffd5c0]">
-                <svg
-                  className="h-7 w-7"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
-                  />
-                </svg>
-              </div>
-
-              {/* 뱃지 */}
-              <span className="inline-block rounded-full bg-[#fff2ec] px-3 py-1 text-xs font-semibold text-[#e14d00]">
-                나만의 프로필 & 링크 페이지
-              </span>
-
-              {/* 메인 카피 & 간결한 소개 */}
-              <h1 className="mt-3 text-[22px] font-bold leading-[30px] text-[#1a1c20] break-keep">
-                흩어진 나의 링크를 한곳에, MyLink
-              </h1>
-              <p className="mt-2 text-sm leading-[21px] text-[#555d6d] break-keep">
-                포트폴리오, 블로그, GitHub까지 나를 표현하는 링크들을
-                <br />
-                깔끔한 한 페이지로 모아 관리하고 공유해보세요.
-              </p>
-
-              {/* 핵심 특징 태그 */}
-              <div className="mt-5 flex flex-wrap justify-center gap-1.5">
-                {["프로필 커스텀", "링크 모아보기", "간편한 공유"].map((tag) => (
-                  <span
-                    key={tag}
-                    className="rounded-full bg-[#f7f8f9] border border-[#eeeff1] px-3 py-1 text-xs font-medium text-[#555d6d]"
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-
-              {/* 구글 시작하기 버튼 */}
-              <button
-                type="button"
-                onClick={handleGoogleLogin}
-                disabled={isLoggingIn}
-                className="mt-6 flex w-full items-center justify-center gap-2.5 rounded-full bg-[#ff6600] px-5 py-3.5 text-sm font-bold text-white shadow-sm transition-all hover:bg-[#e14d00] active:scale-[0.98] disabled:opacity-50"
-              >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white">
-                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24">
-                    <path
-                      fill="#4285F4"
-                      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                    />
-                    <path
-                      fill="#34A853"
-                      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                    />
-                    <path
-                      fill="#FBBC05"
-                      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
-                    />
-                    <path
-                      fill="#EA4335"
-                      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
-                    />
-                  </svg>
-                </span>
-                <span>{isLoggingIn ? "로그인 중..." : "Google로 시작하기"}</span>
-              </button>
-
-              <p className="mt-3 text-[11px] text-[#868b94]">
-                로그인 후 바로 나만의 링크 페이지를 만들 수 있습니다.
-              </p>
-            </div>
-          </div>
-        </main>
-      </div>
-    );
+    return <LandingPage onLogin={handleGoogleLogin} isLoggingIn={isLoggingIn} />;
   }
 
   // 3. 로그인 완료 후 데이터 로드 중 화면
