@@ -334,7 +334,7 @@ export default async function Image({ params }: Props) {
             padding: "0 8px",
           }}
         >
-          <span>https://mylink.io/@{profile.username}</span>
+          <span>https://mylink-hez5.vercel.app/@{profile.username}</span>
           <span style={{ color: "#ff6600", fontWeight: 700 }}>
             {profile.name}님의 포트폴리오 및 링크 모음 · MyLink
           </span>

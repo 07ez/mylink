@@ -375,7 +375,7 @@ export default async function Image() {
             color: "#868b94",
           }}
         >
-          <span>https://mylink.io</span>
+          <span>https://mylink-hez5.vercel.app</span>
           <span style={{ color: "#ff6600", fontWeight: 700 }}>
             모든 링크를 가장 완벽하게 연결하는 방법 · MyLink
           </span>
